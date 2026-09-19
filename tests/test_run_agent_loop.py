@@ -1,11 +1,11 @@
 import json
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 from src.agent import run_agent_loop
 from src.state import AgentState
+from tests.fakes import FakeClient, response, text_block, tool_use_block
 
 
 @pytest.fixture
@@ -16,35 +16,6 @@ def sample_df():
             "region": ["west", "east", "west", "east"],
         }
     )
-
-
-def text_block(text):
-    return SimpleNamespace(type="text", text=text)
-
-
-def tool_use_block(tool_id, name, tool_input):
-    return SimpleNamespace(type="tool_use", id=tool_id, name=name, input=tool_input)
-
-
-def response(content_blocks, stop_reason):
-    return SimpleNamespace(stop_reason=stop_reason, content=content_blocks)
-
-
-class FakeMessages:
-    """Stands in for client.messages - returns pre-scripted responses in order."""
-
-    def __init__(self, scripted_responses):
-        self._scripted_responses = list(scripted_responses)
-        self.calls = []
-
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        return self._scripted_responses.pop(0)
-
-
-class FakeClient:
-    def __init__(self, scripted_responses):
-        self.messages = FakeMessages(scripted_responses)
 
 
 def test_stops_immediately_when_claude_answers_with_no_tool_use(sample_df):

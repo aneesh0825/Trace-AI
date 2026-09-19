@@ -211,6 +211,39 @@ def run_agent_loop(client, state, model="claude-sonnet-5", max_turns=8):
     return state
 
 
+def continue_investigation(client, state, follow_up_text, **kwargs):
+    """
+    Continue the same conversation with a follow-up message (e.g. "I
+    don't buy this, check region instead"), reusing state.messages so
+    Claude has full context of what it already found. Delegates to
+    run_agent_loop, so a follow-up can trigger new tool calls exactly
+    like the initial investigation did. kwargs (model, max_turns) pass
+    straight through to run_agent_loop.
+    """
+    state.messages.append({"role": "user", "content": follow_up_text})
+    return run_agent_loop(client, state, **kwargs)
+
+
+DONE_WORDS = {"", "done", "exit", "quit"}
+
+
+def get_latest_answer_text(state):
+    """
+    Extract the text from Claude's most recent message. If the loop
+    stopped mid-investigation (max_turns reached while still calling
+    tools), the last message is a tool_result, not text - flag that
+    instead of crashing.
+    """
+    final_message = state.messages[-1]
+
+    if final_message["role"] != "assistant":
+        return "(Trace hit max_turns without giving a final answer.)"
+
+    return "\n".join(
+        block.text for block in final_message["content"] if block.type == "text"
+    )
+
+
 if __name__ == "__main__":
     import anthropic
     from dotenv import load_dotenv
@@ -229,10 +262,13 @@ if __name__ == "__main__":
     df = load_dataset(DATA_PATH)
     state = AgentState(df=df, messages=[{"role": "user", "content": QUESTION}])
 
-    final_state = run_agent_loop(client, state)
+    state = run_agent_loop(client, state)
+    print(get_latest_answer_text(state))
 
-    final_message = final_state.messages[-1]
-    final_text = "\n".join(
-        block.text for block in final_message["content"] if block.type == "text"
-    )
-    print(final_text)
+    while True:
+        follow_up = input("\nFollow-up (or 'done' to exit): ").strip()
+        if follow_up.lower() in DONE_WORDS:
+            break
+
+        state = continue_investigation(client, state, follow_up)
+        print(get_latest_answer_text(state))
