@@ -153,3 +153,39 @@ def test_multiple_datasets_are_kept_independent():
 
     assert json.loads(sales_result["content"])["rows"] == 2
     assert json.loads(returns_result["content"])["rows"] == 3
+
+
+def test_run_sql_dispatches_with_dataset_table_alias(datasets):
+    result = execute_tool(
+        "run_sql",
+        {
+            "dataset_name": "sales",
+            "query": "SELECT region, COUNT(*) AS n FROM dataset GROUP BY region",
+        },
+        datasets,
+    )
+
+    assert result["is_error"] is False
+    payload = json.loads(result["content"])
+    counts = {row["region"]: row["n"] for row in payload["rows"]}
+    assert counts == {"west": 2, "east": 2}
+
+
+def test_run_sql_non_select_is_an_error_not_a_crash(datasets):
+    result = execute_tool(
+        "run_sql",
+        {"dataset_name": "sales", "query": "DELETE FROM dataset"},
+        datasets,
+    )
+
+    assert result["is_error"] is True
+
+
+def test_run_sql_bad_sql_is_an_error_not_a_crash(datasets):
+    result = execute_tool(
+        "run_sql",
+        {"dataset_name": "sales", "query": "SELECT does_not_exist FROM dataset"},
+        datasets,
+    )
+
+    assert result["is_error"] is True

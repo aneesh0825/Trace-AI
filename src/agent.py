@@ -124,6 +124,32 @@ TOOLS_SCHEMA = [
             "required": ["dataset_name", "filter_column", "filter_value"],
         },
     },
+    {
+        "name": "run_sql",
+        "description": (
+            "Run a read-only SQL SELECT query against a dataset, for "
+            "filtering, aggregation, or grouping that the other tools "
+            "don't cover directly. The dataset is available in the "
+            "query as a table named 'dataset' (e.g. \"SELECT region, "
+            "SUM(revenue) AS total FROM dataset GROUP BY region\"). "
+            "Only a single SELECT (or WITH ... SELECT) statement is "
+            "allowed, and results are capped at 200 rows."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dataset_name": DATASET_NAME_PROPERTY,
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "The SQL SELECT query to run. Reference the "
+                        "dataset as the table 'dataset'."
+                    ),
+                },
+            },
+            "required": ["dataset_name", "query"],
+        },
+    },
 ]
 
 
@@ -133,6 +159,7 @@ TOOL_FUNCTIONS = {
     "value_counts": tools.value_counts,
     "correlation_matrix": tools.correlation_matrix,
     "compare_segment": tools.compare_segment,
+    "run_sql": tools.run_sql,
 }
 
 

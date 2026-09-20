@@ -1,4 +1,9 @@
+import sqlite3
+
 import pandas as pd
+
+
+MAX_SQL_ROWS = 200
 
 
 def load_dataset(file_path: str) -> pd.DataFrame:
@@ -149,3 +154,46 @@ def compare_segment(
         }
 
     return comparison
+
+
+def run_sql(df: pd.DataFrame, query: str) -> dict:
+    """
+    Run a read-only SQL query against a dataset, available in the query
+    as a table named 'dataset'. Only a single SELECT (or WITH ...
+    SELECT) statement is allowed - no writes, no PRAGMA/ATTACH, no
+    chained statements. Results are capped at MAX_SQL_ROWS rows.
+    """
+
+    stripped = query.strip()
+
+    if not stripped:
+        raise ValueError("Query is empty.")
+
+    body = stripped[:-1].strip() if stripped.endswith(";") else stripped
+
+    if ";" in body:
+        raise ValueError("Only a single SQL statement is allowed.")
+
+    first_word = body.split(None, 1)[0].lower() if body.split() else ""
+
+    if first_word not in ("select", "with"):
+        raise ValueError(
+            "Only SELECT (or WITH ... SELECT) queries are allowed."
+        )
+
+    connection = sqlite3.connect(":memory:")
+    try:
+        df.to_sql("dataset", connection, index=False)
+        result = pd.read_sql_query(body, connection)
+    finally:
+        connection.close()
+
+    total_rows = len(result)
+    limited = result.head(MAX_SQL_ROWS)
+
+    return {
+        "columns": limited.columns.tolist(),
+        "row_count": total_rows,
+        "truncated": total_rows > MAX_SQL_ROWS,
+        "rows": limited.to_dict(orient="records"),
+    }

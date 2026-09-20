@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.tools import compare_segment
+from src.tools import compare_segment, run_sql
 
 
 @pytest.fixture
@@ -56,3 +56,70 @@ def test_percent_change_is_none_when_baseline_mean_is_zero():
 
     assert result["value"]["baseline_mean"] == 0
     assert result["value"]["percent_change"] is None
+
+
+def test_run_sql_basic_filter(sample_df):
+    result = run_sql(
+        sample_df, "SELECT month, revenue FROM dataset WHERE month = 'Aug'"
+    )
+
+    assert result["row_count"] == 2
+    assert result["truncated"] is False
+    assert {row["revenue"] for row in result["rows"]} == {40, 50}
+
+
+def test_run_sql_aggregation(sample_df):
+    result = run_sql(
+        sample_df,
+        "SELECT month, SUM(revenue) AS total FROM dataset "
+        "GROUP BY month ORDER BY month",
+    )
+
+    totals = {row["month"]: row["total"] for row in result["rows"]}
+    assert totals == {"Aug": 90, "Jul": 220, "Sep": 240}
+
+
+def test_run_sql_allows_with_cte(sample_df):
+    result = run_sql(
+        sample_df,
+        "WITH totals AS (SELECT month, revenue FROM dataset) "
+        "SELECT * FROM totals WHERE revenue > 100",
+    )
+
+    assert result["row_count"] == 3
+
+
+def test_run_sql_allows_single_trailing_semicolon(sample_df):
+    result = run_sql(sample_df, "SELECT * FROM dataset;")
+
+    assert result["row_count"] == 6
+
+
+def test_run_sql_rejects_empty_query(sample_df):
+    with pytest.raises(ValueError):
+        run_sql(sample_df, "   ")
+
+
+def test_run_sql_rejects_non_select_statements(sample_df):
+    with pytest.raises(ValueError):
+        run_sql(sample_df, "DROP TABLE dataset")
+
+
+def test_run_sql_rejects_chained_statements(sample_df):
+    with pytest.raises(ValueError):
+        run_sql(sample_df, "SELECT 1; DROP TABLE dataset;")
+
+
+def test_run_sql_bad_column_raises(sample_df):
+    with pytest.raises(Exception):
+        run_sql(sample_df, "SELECT nonexistent_column FROM dataset")
+
+
+def test_run_sql_truncates_large_results():
+    df = pd.DataFrame({"n": range(500)})
+
+    result = run_sql(df, "SELECT * FROM dataset")
+
+    assert result["row_count"] == 500
+    assert result["truncated"] is True
+    assert len(result["rows"]) == 200
