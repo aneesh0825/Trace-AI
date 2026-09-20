@@ -295,6 +295,19 @@ def continue_investigation(client, state, follow_up_text, **kwargs):
 DONE_WORDS = {"", "done", "exit", "quit"}
 
 
+def _block_type(block):
+    """
+    A content block is an SDK object (attribute access) when it was just
+    appended by run_agent_loop this session, or a plain dict (key
+    access) when it came back from load_investigation. Handle both.
+    """
+    return block["type"] if isinstance(block, dict) else block.type
+
+
+def _block_text(block):
+    return block["text"] if isinstance(block, dict) else block.text
+
+
 def get_latest_answer_text(state):
     """
     Extract the text from Claude's most recent message. If the loop
@@ -308,35 +321,63 @@ def get_latest_answer_text(state):
         return "(Trace hit max_turns without giving a final answer.)"
 
     return "\n".join(
-        block.text for block in final_message["content"] if block.type == "text"
+        _block_text(block)
+        for block in final_message["content"]
+        if _block_type(block) == "text"
     )
 
 
 if __name__ == "__main__":
+    import sys
+
     import anthropic
     from dotenv import load_dotenv
 
+    from src.persistence import load_investigation, save_investigation
     from src.tools import load_dataset
 
     load_dotenv()  # picks up ANTHROPIC_API_KEY from a local .env, if present
 
-    DATA_PATH = "data/sample_sales.csv"
-    QUESTION = (
-        "Investigate this sales dataset. I noticed revenue dropped in "
-        "August - figure out what's going on and explain it to me."
-    )
-
     client = anthropic.Anthropic()
-    datasets = {"sales": load_dataset(DATA_PATH)}
-    state = AgentState(datasets=datasets, messages=[{"role": "user", "content": QUESTION}])
 
-    state = run_agent_loop(client, state)
-    print(get_latest_answer_text(state))
+    resume_path = sys.argv[1] if len(sys.argv) > 1 else None
+
+    if resume_path:
+        state = load_investigation(resume_path)
+        print(f"Resumed investigation from {resume_path}.")
+        print(get_latest_answer_text(state))
+    else:
+        DATA_PATH = "data/sample_sales.csv"
+        QUESTION = (
+            "Investigate this sales dataset. I noticed revenue dropped in "
+            "August - figure out what's going on and explain it to me."
+        )
+
+        datasets = {"sales": load_dataset(DATA_PATH)}
+        state = AgentState(
+            datasets=datasets, messages=[{"role": "user", "content": QUESTION}]
+        )
+
+        state = run_agent_loop(client, state)
+        print(get_latest_answer_text(state))
 
     while True:
-        follow_up = input("\nFollow-up (or 'done' to exit): ").strip()
+        follow_up = input(
+            "\nFollow-up ('save <path>' to save, or 'done' to exit): "
+        ).strip()
+
         if follow_up.lower() in DONE_WORDS:
             break
+
+        if follow_up.lower().startswith("save"):
+            parts = follow_up.split(maxsplit=1)
+            if len(parts) < 2:
+                print("Usage: save <path>")
+                continue
+
+            save_investigation(state, parts[1])
+            print(f"Saved to {parts[1]}.")
+            continue
 
         state = continue_investigation(client, state, follow_up)
         print(get_latest_answer_text(state))
