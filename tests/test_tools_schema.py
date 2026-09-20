@@ -25,3 +25,14 @@ def test_every_schema_name_matches_a_real_function_in_tools_py():
 def test_load_dataset_is_deliberately_not_exposed_as_a_tool():
     schema_names = {entry["name"] for entry in TOOLS_SCHEMA}
     assert "load_dataset" not in schema_names
+
+
+def test_every_tool_requires_a_dataset_name():
+    for entry in TOOLS_SCHEMA:
+        input_schema = entry["input_schema"]
+        assert "dataset_name" in input_schema["properties"], (
+            f"'{entry['name']}' has no dataset_name property."
+        )
+        assert "dataset_name" in input_schema["required"], (
+            f"'{entry['name']}' doesn't require dataset_name."
+        )

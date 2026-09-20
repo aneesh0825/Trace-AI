@@ -9,21 +9,23 @@ from tests.fakes import FakeClient, response, text_block, tool_use_block
 
 
 @pytest.fixture
-def sample_df():
-    return pd.DataFrame(
-        {
-            "revenue": [100, 200, 300, 400],
-            "region": ["west", "east", "west", "east"],
-        }
-    )
+def datasets():
+    return {
+        "sales": pd.DataFrame(
+            {
+                "revenue": [100, 200, 300, 400],
+                "region": ["west", "east", "west", "east"],
+            }
+        )
+    }
 
 
-def test_stops_immediately_when_claude_answers_with_no_tool_use(sample_df):
+def test_stops_immediately_when_claude_answers_with_no_tool_use(datasets):
     client = FakeClient(
         [response([text_block("There are 4 rows.")], stop_reason="end_turn")]
     )
     state = AgentState(
-        df=sample_df,
+        datasets=datasets,
         messages=[{"role": "user", "content": "How many rows?"}],
     )
 
@@ -34,18 +36,22 @@ def test_stops_immediately_when_claude_answers_with_no_tool_use(sample_df):
     assert final_state.messages[-1]["content"][0].text == "There are 4 rows."
 
 
-def test_executes_a_single_tool_call_then_stops(sample_df):
+def test_executes_a_single_tool_call_then_stops(datasets):
     client = FakeClient(
         [
             response(
-                [tool_use_block("t1", "summarize_dataset", {})],
+                [
+                    tool_use_block(
+                        "t1", "summarize_dataset", {"dataset_name": "sales"}
+                    )
+                ],
                 stop_reason="tool_use",
             ),
             response([text_block("The dataset has 4 rows.")], stop_reason="end_turn"),
         ]
     )
     state = AgentState(
-        df=sample_df,
+        datasets=datasets,
         messages=[{"role": "user", "content": "How many rows?"}],
     )
 
@@ -66,20 +72,24 @@ def test_executes_a_single_tool_call_then_stops(sample_df):
     assert final_state.messages[-1]["content"][0].text == "The dataset has 4 rows."
 
 
-def test_multiple_tool_calls_in_one_turn_are_sent_back_in_a_single_message(sample_df):
+def test_multiple_tool_calls_in_one_turn_are_sent_back_in_a_single_message(datasets):
     client = FakeClient(
         [
             response(
                 [
-                    tool_use_block("t1", "summarize_dataset", {}),
-                    tool_use_block("t2", "numeric_summary", {}),
+                    tool_use_block(
+                        "t1", "summarize_dataset", {"dataset_name": "sales"}
+                    ),
+                    tool_use_block(
+                        "t2", "numeric_summary", {"dataset_name": "sales"}
+                    ),
                 ],
                 stop_reason="tool_use",
             ),
             response([text_block("Done.")], stop_reason="end_turn"),
         ]
     )
-    state = AgentState(df=sample_df, messages=[{"role": "user", "content": "Investigate."}])
+    state = AgentState(datasets=datasets, messages=[{"role": "user", "content": "Investigate."}])
 
     final_state = run_agent_loop(client, state)
 
@@ -90,25 +100,32 @@ def test_multiple_tool_calls_in_one_turn_are_sent_back_in_a_single_message(sampl
     assert returned_ids == {"t1", "t2"}
 
 
-def test_stops_after_max_turns_instead_of_looping_forever(sample_df):
+def test_stops_after_max_turns_instead_of_looping_forever(datasets):
     # Claude keeps calling tools and never gives a final answer.
     scripted = [
-        response([tool_use_block(f"t{i}", "summarize_dataset", {})], stop_reason="tool_use")
+        response(
+            [tool_use_block(f"t{i}", "summarize_dataset", {"dataset_name": "sales"})],
+            stop_reason="tool_use",
+        )
         for i in range(3)
     ]
     client = FakeClient(scripted)
-    state = AgentState(df=sample_df, messages=[{"role": "user", "content": "Investigate."}])
+    state = AgentState(datasets=datasets, messages=[{"role": "user", "content": "Investigate."}])
 
     run_agent_loop(client, state, max_turns=3)
 
     assert len(client.messages.calls) == 3
 
 
-def test_a_bad_tool_call_becomes_an_error_result_instead_of_crashing(sample_df):
+def test_a_bad_tool_call_becomes_an_error_result_instead_of_crashing(datasets):
     client = FakeClient(
         [
             response(
-                [tool_use_block("t1", "not_a_real_tool", {})],
+                [
+                    tool_use_block(
+                        "t1", "not_a_real_tool", {"dataset_name": "sales"}
+                    )
+                ],
                 stop_reason="tool_use",
             ),
             response(
@@ -117,7 +134,7 @@ def test_a_bad_tool_call_becomes_an_error_result_instead_of_crashing(sample_df):
             ),
         ]
     )
-    state = AgentState(df=sample_df, messages=[{"role": "user", "content": "Investigate."}])
+    state = AgentState(datasets=datasets, messages=[{"role": "user", "content": "Investigate."}])
 
     final_state = run_agent_loop(client, state)
 
@@ -126,3 +143,15 @@ def test_a_bad_tool_call_becomes_an_error_result_instead_of_crashing(sample_df):
     assert "not_a_real_tool" in tool_result_block["content"]
     # The loop kept going after the bad call instead of raising.
     assert final_state.messages[-1]["content"][0].text == "I couldn't find that tool."
+
+
+def test_system_prompt_lists_available_dataset_names(datasets):
+    client = FakeClient(
+        [response([text_block("Done.")], stop_reason="end_turn")]
+    )
+    state = AgentState(datasets=datasets, messages=[{"role": "user", "content": "Hi."}])
+
+    run_agent_loop(client, state)
+
+    system_prompt = client.messages.calls[0]["system"]
+    assert "sales" in system_prompt

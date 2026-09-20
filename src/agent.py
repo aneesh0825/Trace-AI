@@ -12,31 +12,44 @@ from src import tools
 from src.state import AgentState
 
 
+DATASET_NAME_PROPERTY = {
+    "type": "string",
+    "description": (
+        "The name of the dataset to run this tool against (see the "
+        "list of available datasets in the system prompt)."
+    ),
+}
+
+
 TOOLS_SCHEMA = [
     {
         "name": "summarize_dataset",
         "description": (
-            "Get basic structural information about the dataset: row "
+            "Get basic structural information about a dataset: row "
             "count, column count, column names, data types, and "
             "missing-value counts per column. Use this first to "
             "understand what's in the data."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "dataset_name": DATASET_NAME_PROPERTY,
+            },
+            "required": ["dataset_name"],
         },
     },
     {
         "name": "numeric_summary",
         "description": (
             "Get summary statistics (count, mean, std, min, quartiles, "
-            "max) for every numeric column in the dataset."
+            "max) for every numeric column in a dataset."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "dataset_name": DATASET_NAME_PROPERTY,
+            },
+            "required": ["dataset_name"],
         },
     },
     {
@@ -49,6 +62,7 @@ TOOLS_SCHEMA = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "dataset_name": DATASET_NAME_PROPERTY,
                 "column": {
                     "type": "string",
                     "description": "The name of the column to count values in.",
@@ -59,26 +73,28 @@ TOOLS_SCHEMA = [
                     "default": 10,
                 },
             },
-            "required": ["column"],
+            "required": ["dataset_name", "column"],
         },
     },
     {
         "name": "correlation_matrix",
         "description": (
             "Get pairwise correlations between all numeric columns in "
-            "the dataset. Use this to spot relationships between "
-            "numeric variables."
+            "a dataset. Use this to spot relationships between numeric "
+            "variables."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "dataset_name": DATASET_NAME_PROPERTY,
+            },
+            "required": ["dataset_name"],
         },
     },
     {
         "name": "compare_segment",
         "description": (
-            "Compare a segment of the data against the rest of the "
+            "Compare a segment of a dataset against the rest of that "
             "dataset, for every numeric column. Use this to check "
             "whether a specific value in a column (e.g. a particular "
             "month or region) behaves differently from the rest of the "
@@ -88,6 +104,7 @@ TOOLS_SCHEMA = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "dataset_name": DATASET_NAME_PROPERTY,
                 "filter_column": {
                     "type": "string",
                     "description": (
@@ -104,7 +121,7 @@ TOOLS_SCHEMA = [
                     ),
                 },
             },
-            "required": ["filter_column", "filter_value"],
+            "required": ["dataset_name", "filter_column", "filter_value"],
         },
     },
 ]
@@ -130,12 +147,13 @@ def _to_jsonable(value):
     return str(value)
 
 
-def execute_tool(name, tool_input, df):
+def execute_tool(name, tool_input, datasets):
     """
-    Run a tool by name against the loaded DataFrame, using the arguments
-    Claude provided. Never raises: any failure (unknown tool, bad
-    arguments, an exception inside the tool) becomes an is_error result
-    instead, so the agent loop can hand it back to Claude and keep going.
+    Run a tool by name against one of the loaded datasets, using the
+    arguments Claude provided. Never raises: any failure (unknown tool,
+    unknown/missing dataset_name, bad arguments, an exception inside the
+    tool) becomes an is_error result instead, so the agent loop can hand
+    it back to Claude and keep going.
 
     Returns {"content": str, "is_error": bool} - the shape the agent loop
     needs to build an Anthropic tool_result block.
@@ -147,6 +165,24 @@ def execute_tool(name, tool_input, df):
             "content": f"Unknown tool: '{name}'",
             "is_error": True,
         }
+
+    # Copy before popping: tool_input may be the same dict object stored
+    # in state.messages (the tool_use block Claude sent) - mutating it in
+    # place would silently corrupt that history.
+    tool_input = dict(tool_input)
+    dataset_name = tool_input.pop("dataset_name", None)
+
+    if dataset_name not in datasets:
+        available = ", ".join(sorted(datasets)) or "(none loaded)"
+        return {
+            "content": (
+                f"Unknown dataset: {dataset_name!r}. "
+                f"Available datasets: {available}."
+            ),
+            "is_error": True,
+        }
+
+    df = datasets[dataset_name]
 
     try:
         result = function(df, **tool_input)
@@ -162,18 +198,23 @@ def execute_tool(name, tool_input, df):
     }
 
 
-SYSTEM_PROMPT = (
-    "You are Trace, an autonomous data investigation agent. You have "
-    "tools for exploring a tabular dataset. Use them as needed to answer "
-    "the user's question, then give a clear, concise final answer "
-    "summarizing what you found. Don't guess at data you haven't queried."
-)
+def build_system_prompt(datasets):
+    dataset_names = ", ".join(sorted(datasets)) or "(none loaded)"
+    return (
+        "You are Trace, an autonomous data investigation agent. You have "
+        "tools for exploring tabular datasets. Available datasets: "
+        f"{dataset_names}. Every tool call must specify which dataset it "
+        "applies to via dataset_name. Use the tools as needed to answer "
+        "the user's question, then give a clear, concise final answer "
+        "summarizing what you found. Don't guess at data you haven't "
+        "queried."
+    )
 
 
 def run_agent_loop(client, state, model="claude-sonnet-5", max_turns=8):
     """
     Drive the tool-calling loop: ask Claude what to do next, run any
-    tools it requests against state.df, feed the results back, and
+    tools it requests against state.datasets, feed the results back, and
     repeat until Claude answers with plain text (stop_reason != "tool_use")
     or max_turns is reached. Mutates and returns state.
     """
@@ -181,7 +222,7 @@ def run_agent_loop(client, state, model="claude-sonnet-5", max_turns=8):
         response = client.messages.create(
             model=model,
             max_tokens=2048,
-            system=SYSTEM_PROMPT,
+            system=build_system_prompt(state.datasets),
             tools=TOOLS_SCHEMA,
             messages=state.messages,
         )
@@ -196,7 +237,7 @@ def run_agent_loop(client, state, model="claude-sonnet-5", max_turns=8):
 
         tool_results = []
         for block in tool_use_blocks:
-            result = execute_tool(block.name, block.input, state.df)
+            result = execute_tool(block.name, block.input, state.datasets)
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -259,8 +300,8 @@ if __name__ == "__main__":
     )
 
     client = anthropic.Anthropic()
-    df = load_dataset(DATA_PATH)
-    state = AgentState(df=df, messages=[{"role": "user", "content": QUESTION}])
+    datasets = {"sales": load_dataset(DATA_PATH)}
+    state = AgentState(datasets=datasets, messages=[{"role": "user", "content": QUESTION}])
 
     state = run_agent_loop(client, state)
     print(get_latest_answer_text(state))

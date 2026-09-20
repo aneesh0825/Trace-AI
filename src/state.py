@@ -10,10 +10,11 @@ import pandas as pd
 @dataclass
 class AgentState:
     """
-    df: the already-loaded dataset the tools operate on.
+    datasets: every loaded dataset, keyed by the name Claude refers to it
+        by in tool calls (e.g. {"sales": df}).
     messages: the running conversation history, in the shape the
         Anthropic Messages API expects (list of {"role", "content"} dicts).
     """
 
-    df: pd.DataFrame
+    datasets: dict[str, pd.DataFrame]
     messages: list = field(default_factory=list)

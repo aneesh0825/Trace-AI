@@ -7,21 +7,23 @@ from tests.fakes import FakeClient, response, text_block, tool_use_block
 
 
 @pytest.fixture
-def sample_df():
-    return pd.DataFrame(
-        {
-            "revenue": [100, 200, 300, 400],
-            "region": ["west", "east", "west", "east"],
-        }
-    )
+def datasets():
+    return {
+        "sales": pd.DataFrame(
+            {
+                "revenue": [100, 200, 300, 400],
+                "region": ["west", "east", "west", "east"],
+            }
+        )
+    }
 
 
-def test_appends_follow_up_and_preserves_existing_history(sample_df):
+def test_appends_follow_up_and_preserves_existing_history(datasets):
     client = FakeClient(
         [response([text_block("Revised answer.")], stop_reason="end_turn")]
     )
     state = AgentState(
-        df=sample_df,
+        datasets=datasets,
         messages=[
             {"role": "user", "content": "How many rows?"},
             {"role": "assistant", "content": [text_block("There are 4 rows.")]},
@@ -43,12 +45,12 @@ def test_appends_follow_up_and_preserves_existing_history(sample_df):
     assert final_state.messages[-1]["content"][0].text == "Revised answer."
 
 
-def test_follow_up_is_sent_to_claude_as_part_of_the_next_request(sample_df):
+def test_follow_up_is_sent_to_claude_as_part_of_the_next_request(datasets):
     client = FakeClient(
         [response([text_block("Revised answer.")], stop_reason="end_turn")]
     )
     state = AgentState(
-        df=sample_df,
+        datasets=datasets,
         messages=[{"role": "user", "content": "How many rows?"}],
     )
 
@@ -58,11 +60,17 @@ def test_follow_up_is_sent_to_claude_as_part_of_the_next_request(sample_df):
     assert sent_messages[-1] == {"role": "user", "content": "Check region instead."}
 
 
-def test_continue_investigation_can_trigger_new_tool_calls(sample_df):
+def test_continue_investigation_can_trigger_new_tool_calls(datasets):
     client = FakeClient(
         [
             response(
-                [tool_use_block("t1", "value_counts", {"column": "region"})],
+                [
+                    tool_use_block(
+                        "t1",
+                        "value_counts",
+                        {"dataset_name": "sales", "column": "region"},
+                    )
+                ],
                 stop_reason="tool_use",
             ),
             response(
@@ -71,7 +79,7 @@ def test_continue_investigation_can_trigger_new_tool_calls(sample_df):
         ]
     )
     state = AgentState(
-        df=sample_df,
+        datasets=datasets,
         messages=[
             {"role": "user", "content": "Investigate revenue."},
             {"role": "assistant", "content": [text_block("Revenue looks flat.")]},
@@ -89,15 +97,16 @@ def test_continue_investigation_can_trigger_new_tool_calls(sample_df):
     assert final_state.messages[-1]["content"][0].text == "Region is evenly split."
 
 
-def test_continue_investigation_passes_through_max_turns(sample_df):
+def test_continue_investigation_passes_through_max_turns(datasets):
     scripted = [
         response(
-            [tool_use_block(f"t{i}", "summarize_dataset", {})], stop_reason="tool_use"
+            [tool_use_block(f"t{i}", "summarize_dataset", {"dataset_name": "sales"})],
+            stop_reason="tool_use",
         )
         for i in range(2)
     ]
     client = FakeClient(scripted)
-    state = AgentState(df=sample_df, messages=[{"role": "user", "content": "Investigate."}])
+    state = AgentState(datasets=datasets, messages=[{"role": "user", "content": "Investigate."}])
 
     continue_investigation(client, state, "Try again.", max_turns=2)
 
