@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from src.agent import get_latest_answer_text
+from src.graph import record_hypothesis, update_hypothesis
 from src.persistence import load_investigation, save_investigation
 from src.state import AgentState
 from tests.fakes import text_block, tool_use_block
@@ -154,3 +155,70 @@ def test_save_accepts_a_plain_string_path(tmp_path, datasets, full_history):
     loaded = load_investigation(path)
 
     assert loaded.datasets["sales"].shape == datasets["sales"].shape
+
+
+# --- investigation graph round-trip ---
+
+
+def test_save_writes_graph_into_the_manifest(tmp_path, datasets, full_history):
+    graph = []
+    record_hypothesis(graph, "August drop is a west region issue.", turn=1)
+    state = AgentState(datasets=datasets, messages=full_history, graph=graph)
+    path = tmp_path / "investigation"
+
+    save_investigation(state, path)
+
+    manifest = json.loads((path / "manifest.json").read_text())
+    assert manifest["graph"] == graph
+
+
+def test_round_trip_preserves_graph_contents(tmp_path, datasets, full_history):
+    graph = []
+    record_hypothesis(graph, "August drop is a west region issue.", turn=1)
+    update_hypothesis(
+        graph,
+        "h1",
+        status="supported",
+        evidence={
+            "tool_name": "compare_segment",
+            "note": "West region revenue down 40% vs baseline.",
+        },
+        turn=2,
+    )
+    state = AgentState(datasets=datasets, messages=full_history, graph=graph)
+    path = tmp_path / "investigation"
+
+    save_investigation(state, path)
+    loaded = load_investigation(path)
+
+    assert loaded.graph == graph
+
+
+def test_round_trip_with_empty_graph_stays_empty(tmp_path, datasets, full_history):
+    state = AgentState(datasets=datasets, messages=full_history)
+    path = tmp_path / "investigation"
+
+    save_investigation(state, path)
+    loaded = load_investigation(path)
+
+    assert loaded.graph == []
+
+
+def test_load_investigation_handles_a_manifest_saved_before_the_graph_existed(
+    tmp_path, datasets, full_history
+):
+    # Simulates a pre-V4 saved investigation: manifest.json has no "graph"
+    # key at all. Loading it shouldn't crash - it should just come back
+    # with an empty graph.
+    state = AgentState(datasets=datasets, messages=full_history)
+    path = tmp_path / "investigation"
+    save_investigation(state, path)
+
+    manifest_path = path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["graph"]
+    manifest_path.write_text(json.dumps(manifest))
+
+    loaded = load_investigation(path)
+
+    assert loaded.graph == []

@@ -8,6 +8,7 @@ based on the tool schemas below.
 
 import json
 
+from src import graph as graph_module
 from src import tools
 from src.state import AgentState
 
@@ -150,16 +151,113 @@ TOOLS_SCHEMA = [
             "required": ["dataset_name", "query"],
         },
     },
+    {
+        "name": "record_hypothesis",
+        "description": (
+            "Record a new hypothesis about what's driving a pattern in "
+            "the data, before you test it. Use this to make your "
+            "reasoning explicit and trackable, separate from your "
+            "analysis calls. Only use this for a genuinely new "
+            "hypothesis - if new evidence bears on one you already "
+            "recorded, use update_hypothesis instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "statement": {
+                    "type": "string",
+                    "description": (
+                        "The hypothesis, stated as a specific, testable "
+                        "claim (e.g. 'The August revenue drop is driven "
+                        "by the west region')."
+                    ),
+                },
+                "related_to": {
+                    "type": "string",
+                    "description": (
+                        "The id of an existing hypothesis this one "
+                        "refines, supersedes, or contradicts, if any "
+                        "(e.g. 'h1')."
+                    ),
+                },
+            },
+            "required": ["statement"],
+        },
+    },
+    {
+        "name": "update_hypothesis",
+        "description": (
+            "Update a hypothesis you already recorded, after gathering "
+            "evidence for or against it: change its status and/or "
+            "attach what you found. Use this instead of "
+            "record_hypothesis when new evidence bears on an existing "
+            "hypothesis rather than suggesting a new one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hypothesis_id": {
+                    "type": "string",
+                    "description": (
+                        "The id of the hypothesis to update (e.g. 'h1')."
+                    ),
+                },
+                "status": {
+                    "type": "string",
+                    "enum": sorted(graph_module.STATUSES),
+                    "description": "The hypothesis's new status, if it changed.",
+                },
+                "evidence": {
+                    "type": "object",
+                    "description": (
+                        "What you found, if you ran a test for this "
+                        "hypothesis."
+                    ),
+                    "properties": {
+                        "tool_name": {
+                            "type": "string",
+                            "description": (
+                                "The analysis tool that produced this "
+                                "evidence (e.g. 'compare_segment')."
+                            ),
+                        },
+                        "tool_use_id": {
+                            "type": "string",
+                            "description": (
+                                "The id of that tool call, if you have "
+                                "it, so the evidence can be traced back "
+                                "to its raw result."
+                            ),
+                        },
+                        "note": {
+                            "type": "string",
+                            "description": (
+                                "A short, specific summary of what the "
+                                "evidence showed."
+                            ),
+                        },
+                    },
+                    "required": ["note"],
+                },
+            },
+            "required": ["hypothesis_id"],
+        },
+    },
 ]
 
 
-TOOL_FUNCTIONS = {
+DATASET_TOOL_FUNCTIONS = {
     "summarize_dataset": tools.summarize_dataset,
     "numeric_summary": tools.numeric_summary,
     "value_counts": tools.value_counts,
     "correlation_matrix": tools.correlation_matrix,
     "compare_segment": tools.compare_segment,
     "run_sql": tools.run_sql,
+}
+
+GRAPH_TOOL_FUNCTIONS = {
+    "record_hypothesis": graph_module.record_hypothesis,
+    "update_hypothesis": graph_module.update_hypothesis,
 }
 
 
@@ -174,25 +272,7 @@ def _to_jsonable(value):
     return str(value)
 
 
-def execute_tool(name, tool_input, datasets):
-    """
-    Run a tool by name against one of the loaded datasets, using the
-    arguments Claude provided. Never raises: any failure (unknown tool,
-    unknown/missing dataset_name, bad arguments, an exception inside the
-    tool) becomes an is_error result instead, so the agent loop can hand
-    it back to Claude and keep going.
-
-    Returns {"content": str, "is_error": bool} - the shape the agent loop
-    needs to build an Anthropic tool_result block.
-    """
-    function = TOOL_FUNCTIONS.get(name)
-
-    if function is None:
-        return {
-            "content": f"Unknown tool: '{name}'",
-            "is_error": True,
-        }
-
+def _execute_dataset_tool(name, function, tool_input, datasets):
     # Copy before popping: tool_input may be the same dict object stored
     # in state.messages (the tool_use block Claude sent) - mutating it in
     # place would silently corrupt that history.
@@ -225,6 +305,58 @@ def execute_tool(name, tool_input, datasets):
     }
 
 
+def _execute_graph_tool(name, function, tool_input, graph, turn):
+    # turn is harness bookkeeping, not something Claude supplies - stamp
+    # it ourselves rather than trusting it in tool_input.
+    tool_input = dict(tool_input)
+    tool_input.pop("turn", None)
+
+    try:
+        result = function(graph, turn=turn, **tool_input)
+    except Exception as error:
+        return {
+            "content": f"Error running '{name}': {error}",
+            "is_error": True,
+        }
+
+    return {
+        "content": json.dumps(result, default=_to_jsonable),
+        "is_error": False,
+    }
+
+
+def execute_tool(name, tool_input, state, turn=None):
+    """
+    Run a tool by name against agent state, using the arguments Claude
+    provided. Never raises: any failure (unknown tool, unknown/missing
+    dataset_name, bad arguments, an exception inside the tool) becomes
+    an is_error result instead, so the agent loop can hand it back to
+    Claude and keep going.
+
+    Dataset tools (summarize_dataset, run_sql, ...) read state.datasets
+    and require dataset_name. Graph tools (record_hypothesis,
+    update_hypothesis) mutate state.graph instead - turn is stamped by
+    the caller (the agent loop), not supplied by Claude.
+
+    Returns {"content": str, "is_error": bool} - the shape the agent loop
+    needs to build an Anthropic tool_result block.
+    """
+    if name in GRAPH_TOOL_FUNCTIONS:
+        return _execute_graph_tool(
+            name, GRAPH_TOOL_FUNCTIONS[name], tool_input, state.graph, turn
+        )
+
+    function = DATASET_TOOL_FUNCTIONS.get(name)
+
+    if function is None:
+        return {
+            "content": f"Unknown tool: '{name}'",
+            "is_error": True,
+        }
+
+    return _execute_dataset_tool(name, function, tool_input, state.datasets)
+
+
 def build_system_prompt(datasets):
     dataset_names = ", ".join(sorted(datasets)) or "(none loaded)"
     return (
@@ -234,18 +366,26 @@ def build_system_prompt(datasets):
         "applies to via dataset_name. Use the tools as needed to answer "
         "the user's question, then give a clear, concise final answer "
         "summarizing what you found. Don't guess at data you haven't "
-        "queried."
+        "queried.\n\n"
+        "As you investigate, keep a record of your reasoning using "
+        "record_hypothesis and update_hypothesis, separate from your "
+        "analysis tool calls: record a hypothesis before you test it, "
+        "then update it with what you found and whether it changes "
+        "your confidence. Update an existing hypothesis when new "
+        "evidence bears on it; only record a new one when you have a "
+        "genuinely different explanation."
     )
 
 
 def run_agent_loop(client, state, model="claude-sonnet-5", max_turns=8):
     """
     Drive the tool-calling loop: ask Claude what to do next, run any
-    tools it requests against state.datasets, feed the results back, and
-    repeat until Claude answers with plain text (stop_reason != "tool_use")
-    or max_turns is reached. Mutates and returns state.
+    tools it requests against state (datasets for analysis tools, graph
+    for hypothesis tools), feed the results back, and repeat until
+    Claude answers with plain text (stop_reason != "tool_use") or
+    max_turns is reached. Mutates and returns state.
     """
-    for _ in range(max_turns):
+    for turn in range(1, max_turns + 1):
         response = client.messages.create(
             model=model,
             max_tokens=2048,
@@ -264,7 +404,7 @@ def run_agent_loop(client, state, model="claude-sonnet-5", max_turns=8):
 
         tool_results = []
         for block in tool_use_blocks:
-            result = execute_tool(block.name, block.input, state.datasets)
+            result = execute_tool(block.name, block.input, state, turn=turn)
             tool_results.append(
                 {
                     "type": "tool_result",

@@ -1,7 +1,8 @@
 """
-Save and load a Trace investigation (datasets + full message history) to
-and from disk, so a conversation can be resumed later and continued with
-continue_investigation as if it had never stopped.
+Save and load a Trace investigation (datasets, full message history, and
+the investigation graph) to and from disk, so a conversation can be
+resumed later and continued with continue_investigation as if it had
+never stopped.
 """
 
 import json
@@ -45,8 +46,9 @@ def _serialize_messages(messages):
 
 def save_investigation(state: AgentState, path) -> None:
     """
-    Save state.datasets (one CSV per dataset) and state.messages (as
-    JSON) under `path`, a directory created if it doesn't already exist.
+    Save state.datasets (one CSV per dataset), state.messages, and
+    state.graph (both as JSON) under `path`, a directory created if it
+    doesn't already exist.
     """
     directory = Path(path)
     datasets_dir = directory / "datasets"
@@ -61,6 +63,7 @@ def save_investigation(state: AgentState, path) -> None:
     manifest = {
         "datasets": dataset_files,
         "messages": _serialize_messages(state.messages),
+        "graph": state.graph,
     }
 
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -81,4 +84,8 @@ def load_investigation(path) -> AgentState:
         for name, filename in manifest["datasets"].items()
     }
 
-    return AgentState(datasets=datasets, messages=manifest["messages"])
+    return AgentState(
+        datasets=datasets,
+        messages=manifest["messages"],
+        graph=manifest.get("graph", []),
+    )
